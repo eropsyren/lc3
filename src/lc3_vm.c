@@ -14,7 +14,7 @@
 #define OP_AND 5
 #define OP_LOAD_REGISTER 6
 #define OP_STORE_REGISTER 7
-#define OP_UNUSED 8
+#define OP_RETURN_FROM_INTERRUPT 8
 #define OP_NOT 9
 #define OP_LOAD_INDIRECT 10
 #define OP_STORE_INDIRECT 11
@@ -26,6 +26,20 @@
 #define COND_POSITIVE 0b0001
 #define COND_ZERO 0b0010
 #define COND_NEGATIVE 0b0100
+
+void update_condition_register(LC3VM* vm, uint16_t register_number);
+
+// Sign extend the rightmost bit_count bits in x
+uint16_t sign_extend(uint16_t x, int bit_count);
+
+// Get the vaule from instruction that starts at index (starting from right) and
+// is length bit long
+uint16_t get_value(uint16_t instruction, uint16_t index, uint16_t length);
+
+// Write to memory
+void write(uint16_t address, uint16_t value);
+// Read form memory
+uint16_t read(uint16_t address);
 
 typedef struct LC3VM {
     // Memory locations
@@ -46,12 +60,45 @@ LC3VM* lc3_vm_new() {
     return vm;
 }
 
+void lc3_vm_free(LC3VM const* vm) { free(vm); }
+
 void lc3_vm_execute(LC3VM* vm, uint16_t instruction) {
-    switch (instruction) {
+    uint16_t opcode = instruction >> 12;
+
+    switch (opcode) {
         case OP_BRANCH:
+            uint16_t pc_offset = get_value(instruction, 8, 9);
+            uint16_t condition = get_value(instruction, 11, 3);
+
+            if (condition & vm->condition) {
+                vm->program_counter += pc_offset;
+            }
+
             break;
 
         case OP_ADD:
+            // Destination register
+            uint16_t dr = get_value(instruction, 11, 3);
+            // First operand
+            uint16_t sr1 = get_value(instruction, 8, 3);
+            // Immediate mode flag
+            uint16_t imm = get_value(instruction, 5, 1);
+
+            if (imm) {
+                // Second operand
+                uint16_t imm5 = get_value(instruction, 4, 5);
+
+                imm5 = sign_extend(imm5, 5);
+                vm->registers[dr] = vm->registers[sr1] + imm5;
+            } else {
+                // Second operand
+                uint16_t sr2 = get_value(instruction, 2, 3);
+
+                vm->registers[dr] = vm->registers[sr1] + vm->registers[sr2];
+            }
+
+            update_condition_register(vm, dr);
+
             break;
 
         case OP_LOAD:
@@ -64,6 +111,23 @@ void lc3_vm_execute(LC3VM* vm, uint16_t instruction) {
             break;
 
         case OP_AND:
+            uint16_t dr = get_value(instruction, 11, 3);
+            uint16_t sr1 = get_value(instruction, 8, 3);
+            uint16_t imm = get_value(instruction, 5, 1);
+
+            if (imm) {
+                uint16_t imm5 = get_value(instruction, 4, 5);
+
+                imm5 = sign_extend(imm5, 5);
+                vm->registers[dr] = vm->registers[sr1] & imm5;
+            } else {
+                uint16_t sr2 = get_value(instruction, 2, 3);
+
+                vm->registers[dr] = vm->registers[sr1] & vm->registers[sr2];
+            }
+
+            update_condition_register(vm, dr);
+
             break;
 
         case OP_LOAD_REGISTER:
@@ -72,13 +136,29 @@ void lc3_vm_execute(LC3VM* vm, uint16_t instruction) {
         case OP_STORE_REGISTER:
             break;
 
-        case OP_UNUSED:
+        case OP_RETURN_FROM_INTERRUPT:
+            // Do nothing
             break;
 
         case OP_NOT:
+            uint16_t dr = get_value(instruction, 11, 3);
+            uint16_t sr = get_value(instruction, 8, 3);
+
+            vm->registers[dr] = ~vm->registers[sr];
+
+            update_condition_register(vm, dr);
+
             break;
 
         case OP_LOAD_INDIRECT:
+            uint16_t dr = get_value(instruction, 11, 3);
+            uint16_t pc_offset = get_value(instruction, 8, 9);
+
+            vm->registers[dr] =
+                mem_read(mem_read(vm->program_counter + pc_offset));
+
+            update_condition_register(vm, dr);
+
             break;
 
         case OP_STORE_INDIRECT:
@@ -88,6 +168,7 @@ void lc3_vm_execute(LC3VM* vm, uint16_t instruction) {
             break;
 
         case OP_RESERVED:
+            // Do nothing
             break;
 
         case OP_LOAD_EFFECTIVE_ADDRESS:
@@ -108,4 +189,17 @@ void update_condition_register(LC3VM* vm, uint16_t register_number) {
     }
 }
 
-void lc3_vm_free(LC3VM const* vm) { free(vm); }
+uint16_t sign_extend(uint16_t x, int bit_count) {
+    if ((x >> (bit_count - 1)) & 1) {
+        x |= (0xFFFF << bit_count);
+    }
+
+    return x;
+}
+
+uint16_t get_value(uint16_t instruction, uint16_t index, uint16_t length) {
+    uint16_t tmp = instruction >> (index - length + 1);
+    uint16_t bitmask = (1 << length) - 1;
+
+    return tmp & bitmask;
+}
